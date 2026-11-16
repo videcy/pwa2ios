@@ -3,7 +3,7 @@
 > 没有 Mac、不想交 99 美元开发者年费，也能把自己的 App 装到 iPhone 上。
 > 这份文档记录了我从零跑通的完整流程和踩过的坑，重点是：**把一个 PWA 包成原生壳，用上 PWA 用不了的 iOS 功能。**
 
-<!-- TODO(作者)：在这里写一两句你自己的故事，比如为什么做、做了什么 -->
+我是在 TikTok 的评论区第一次听说 xtool 的。之前没有参考过别人的项目，下面的流程和坑都是自己一步步试出来的。我原本有一个自己做的 PWA，想用上闹钟、灵动岛这些 PWA 做不到的功能，于是把它包成了原生壳。
 
 > 本文所有构建、签名、安装都基于 **[xtool](https://github.com/xtool-org/xtool)**（MIT 协议），一个跨平台的 Xcode 替代品，可以在 Linux / Windows / macOS 上用 SwiftPM 构建并部署 iOS App。感谢 xtool 的作者和贡献者。本文只是使用经验，不是官方文档，遇到问题请以 xtool 仓库为准。
 
@@ -41,7 +41,6 @@
 | 通话音频（扬声器、后台） | 受限 | ✅ 可以自己控制音频会话 |
 | 远程推送 | ✅ Web Push（iOS 16.4+） | ❌ 免费账号没有 APNs |
 
-<!-- TODO(作者)：上表里你自己验证过的打 ✅，没验证的标注出来 -->
 
 免费账号的其他限制：同一时间最多装 3 个自签 App；每 7 天能注册的 App ID 数量有限（加小组件会多占一个）。
 
@@ -59,7 +58,11 @@
 
 注意：推送内容会经过第三方的服务器。**敏感内容不要放在推送正文里**，推送只写“有新消息”，点开再进 App 看。
 
-<!-- TODO(作者)：你自己用过哪个，写一下体验 -->
+我的使用体验：
+
+- **Bark**：最简单，能直接推送具体内容。缺点是通知上显示的是 Bark 的图标，不是你自己 App 的，看着有点别扭。
+- **Pushcut**：通过触发快捷指令发通知，看起来更像原生通知。缺点是只能发固定内容，比如“XX 给你发了一条消息”，看不到具体消息是什么，得点进去看。
+- **ntfy**：我没用过。
 
 ---
 
@@ -148,8 +151,6 @@ cd MyApp
 
 ### 4.2 最小的 WebView 壳
 
-<!-- TODO(作者)：确认下面的文件名和 xtool new 生成的模板一致 -->
-
 ```swift
 import SwiftUI
 import WebKit
@@ -194,7 +195,45 @@ xtool dev build    # 只构建，产物在 ./xtool/MyApp.app
 
 ### 4.4 网页和原生怎么通信
 
-<!-- TODO(作者)：这里可以写你的 bridge 思路，比如网页通过 window.webkit.messageHandlers 调原生闹钟 -->
+网页想用原生功能（比如排一个系统闹钟），需要一座“桥”。思路是双向发消息：
+
+**网页 → 原生**：原生注册一个消息通道，网页往里发 JSON。
+
+```swift
+// 原生：注册名为 "bridge" 的通道
+final class Bridge: NSObject, WKScriptMessageHandler {
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        // 只接受自己域名的消息，防止别的网页调用原生功能
+        guard message.frameInfo.securityOrigin.host == "your-pwa.example.com",
+              let body = message.body as? [String: Any],
+              let type = body["type"] as? String else { return }
+        switch type {
+        case "alarm.set": break   // 调 AlarmKit
+        default: break
+        }
+    }
+}
+// 创建 WebView 时：config.userContentController.add(Bridge(), name: "bridge")
+```
+
+```js
+// 网页：判断是否在原生壳里，在的话就发消息
+const native = window.webkit?.messageHandlers?.bridge;
+if (native) native.postMessage({ type: "alarm.set", time: "07:30" });
+```
+
+**原生 → 网页**：原生执行一段 JS，派发一个自定义事件，网页监听它。
+
+```swift
+let json = #"{"type":"alarm.result","ok":true}"#
+webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent('native', { detail: \(json) }))")
+```
+
+```js
+window.addEventListener("native", (e) => console.log(e.detail));
+```
+
+这样同一套网页代码，在 Safari 里照常运行，在原生壳里就能多出原生功能。
 
 ---
 
@@ -211,7 +250,7 @@ cd ~/MyApp && xtool dev
 ```
 
 - **始终用同一个 Apple ID**。换账号会导致 bundle ID 变化，App 里的本地数据不会带过去。
-- 覆盖安装会保留 App 里的登录状态。<!-- TODO(作者)：确认 -->
+- 覆盖安装会保留 App 里的登录状态，不用重新登录。
 - 建议给自己设个每周的提醒。也可以在 App 里读 `embedded.mobileprovision` 的过期时间，到期前弹本地通知提醒自己。
 
 ### 能不能自动续签？
@@ -219,7 +258,7 @@ cd ~/MyApp && xtool dev
 可以写成一键脚本，但**完全无人值守不太现实**，原因是：
 
 - 手机得连着 Windows（数据线，或在 Apple Devices 里开启 Wi-Fi 同步）。
-- 手机最好是解锁状态，锁屏时安装可能失败。<!-- TODO(作者)：实测锁屏能不能装 -->
+- 手机必须是解锁状态，锁屏时装不上。
 - Apple ID 的登录会过期，过期后 `xtool auth` 需要你输入密码和双重认证验证码，脚本没法替你点。
 - WSL 得开着，网关 IP 变了还要重跑 `netsh`。
 
@@ -265,9 +304,9 @@ chmod +x ~/renew.sh
 
 ---
 
-## 7. 我还没验证的
+## 7. 遇到其他问题
 
-<!-- TODO(作者)：列出你没测过的点，方便别人知道边界 -->
+这份文档只覆盖我走过的路。遇到这里没写的问题，去 [xtool 仓库](https://github.com/xtool-org/xtool) 的 README 和 issues 里找，那里的信息最全、最新。
 
 ## 参考
 
